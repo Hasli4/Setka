@@ -1,0 +1,16 @@
+{
+  "name": "setka",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "app": "electron electron/main.mjs",
+    "test": "node --test",
+    "test:e2e": "npx playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "electron": "^31.7.7"
+  }
+}
