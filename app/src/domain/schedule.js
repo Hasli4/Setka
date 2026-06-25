@@ -9,7 +9,23 @@ export const SCHEDULE_DAYS = Object.freeze([
 ]);
 
 export const SCHEDULE_HOURS = Object.freeze(Array.from({ length: 10 }, (_, index) => 8 + index));
-export const SCHEDULE_TIMES = Object.freeze(SCHEDULE_HOURS.map((hour) => `${String(hour).padStart(2, '0')}:00`));
+export const SCHEDULE_SLOT_MINUTES = Object.freeze([0, 30]);
+export const SCHEDULE_TIMES = Object.freeze(
+  SCHEDULE_HOURS.flatMap((hour, index) => {
+    const hourLabel = String(hour).padStart(2, '0');
+    const isLastHour = index === SCHEDULE_HOURS.length - 1;
+    return isLastHour ? [`${hourLabel}:00`] : [`${hourLabel}:00`, `${hourLabel}:30`];
+  }),
+);
+export const SCHEDULE_LESSON_KINDS = Object.freeze({
+  regular: 'regular',
+  oneOff: 'one_off',
+});
+
+export const SCHEDULE_PLAN_TYPES = Object.freeze({
+  currentWeek: 'current_week',
+  permanent: 'permanent',
+});
 
 export const SCHEDULE_PRIORITIES = Object.freeze([
   { value: 'green', label: 'Зеленый', description: 'удобно' },
@@ -37,8 +53,13 @@ export function createSchedulePlan(title = 'Расписание 1', deviceId = 
     timezone: 'moscow',
     hideNames: false,
     includeInExport: true,
+    type: null,
+    fixed: false,
     priorityColor: 'green',
     paintMode: false,
+    lessons: [],
+    lessonsInitialized: false,
+    hiddenRegularLessonIds: [],
     assignments: {},
     painted: {},
     createdAt: now,
@@ -71,8 +92,15 @@ export function normalizeSchedulePlan(plan) {
     timezone: timezoneValues.has(plan?.timezone) ? plan.timezone : 'moscow',
     hideNames: Boolean(plan?.hideNames),
     includeInExport: plan?.includeInExport !== false,
+    type: Object.values(SCHEDULE_PLAN_TYPES).includes(plan?.type) ? plan.type : null,
+    fixed: Boolean(plan?.fixed),
     priorityColor: priorityValues.has(plan?.priorityColor) ? plan.priorityColor : 'green',
     paintMode: Boolean(plan?.paintMode),
+    lessons: normalizePlanLessons(plan?.lessons),
+    lessonsInitialized: Boolean(plan?.lessonsInitialized),
+    hiddenRegularLessonIds: Array.isArray(plan?.hiddenRegularLessonIds)
+      ? [...new Set(plan.hiddenRegularLessonIds.filter((id) => typeof id === 'string' && id))]
+      : [],
     assignments: normalizeAssignments(plan?.assignments),
     painted: normalizePainted(plan?.painted),
   };
@@ -90,27 +118,33 @@ export function touchSchedulePlan(plan, patch = {}) {
   });
 }
 
-export function slotKey(dayKey, hour) {
+export function slotKey(dayKey, hour, minute = 0) {
   if (!dayKeys.has(dayKey)) {
     throw new Error('Некорректный день расписания.');
   }
 
-  if (!SCHEDULE_HOURS.includes(Number(hour))) {
+  const normalizedHour = Number(hour);
+  const normalizedMinute = Number(minute);
+  const formatted = `${String(normalizedHour).padStart(2, '0')}:${String(normalizedMinute).padStart(2, '0')}`;
+
+  if (!SCHEDULE_TIMES.includes(formatted)) {
     throw new Error('Некорректное время расписания.');
   }
 
-  return `${dayKey}_${Number(hour)}`;
+  return normalizedMinute === 0 ? `${dayKey}_${normalizedHour}` : `${dayKey}_${normalizedHour}_${normalizedMinute}`;
 }
 
 export function parseSlotKey(key) {
-  const [dayKey, hourValue] = String(key).split('_');
+  const [dayKey, hourValue, minuteValue = '0'] = String(key).split('_');
   const hour = Number(hourValue);
+  const minute = Number(minuteValue);
+  const startTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 
-  if (!dayKeys.has(dayKey) || !SCHEDULE_HOURS.includes(hour)) {
+  if (!dayKeys.has(dayKey) || !SCHEDULE_TIMES.includes(startTime)) {
     return null;
   }
 
-  return { dayKey, hour };
+  return { dayKey, hour, minute, startTime, totalMinutes: hour * 60 + minute };
 }
 
 export function assignStudentToSlot(plan, slot, studentId) {
@@ -119,6 +153,56 @@ export function assignStudentToSlot(plan, slot, studentId) {
   delete painted[slot];
 
   return touchSchedulePlan(plan, { assignments, painted });
+}
+
+export function upsertScheduleLesson(plan, lesson) {
+  const normalizedLesson = normalizeScheduleLesson(lesson);
+
+  if (!normalizedLesson) {
+    return plan;
+  }
+
+  const lessons = [...(plan.lessons ?? [])];
+  const index = lessons.findIndex((item) => item.id === normalizedLesson.id);
+
+  if (index >= 0) {
+    lessons[index] = normalizedLesson;
+  } else {
+    lessons.push(normalizedLesson);
+  }
+
+  const assignments = { ...(plan.assignments ?? {}) };
+  delete assignments[lessonSlotKey(normalizedLesson)];
+
+  return touchSchedulePlan(plan, { lessons, assignments, lessonsInitialized: true });
+}
+
+export function moveScheduleLesson(plan, lessonId, targetSlot) {
+  const parsed = parseSlotKey(targetSlot);
+
+  if (!parsed) {
+    return plan;
+  }
+
+  const lessons = (plan.lessons ?? []).map((lesson) =>
+    lesson.id === lessonId
+      ? {
+          ...lesson,
+          weekday: parsed.dayKey,
+          startTime: parsed.startTime,
+          timezone: 'moscow',
+        }
+      : lesson,
+  );
+  const assignments = { ...(plan.assignments ?? {}) };
+  delete assignments[targetSlot];
+
+  return touchSchedulePlan(plan, { lessons, assignments, lessonsInitialized: true });
+}
+
+export function clearScheduleLesson(plan, lessonId) {
+  const lessons = (plan.lessons ?? []).filter((lesson) => lesson.id !== lessonId);
+  return touchSchedulePlan(plan, { lessons, lessonsInitialized: true });
 }
 
 export function moveAssignment(plan, sourceSlot, targetSlot) {
@@ -186,12 +270,13 @@ export function parseMoscowTime(value) {
 
   const hour = Number(match[1]);
   const minute = Number(match[2] ?? 0);
+  const formatted = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 
-  if (!SCHEDULE_HOURS.includes(hour) || minute !== 0) {
+  if (!SCHEDULE_TIMES.includes(formatted)) {
     return null;
   }
 
-  return `${String(hour).padStart(2, '0')}:00`;
+  return formatted;
 }
 
 export function timeToHour(value) {
@@ -211,4 +296,43 @@ function normalizePainted(painted) {
       .map(([key, value]) => [key, normalizePriority(value)])
       .filter(([key, value]) => parseSlotKey(key) && value),
   );
+}
+
+function normalizePlanLessons(lessons) {
+  if (!Array.isArray(lessons)) {
+    return [];
+  }
+
+  return lessons.map(normalizeScheduleLesson).filter(Boolean);
+}
+
+function normalizeScheduleLesson(lesson) {
+  const studentId = String(lesson?.studentId ?? '').trim();
+  const weekday = String(lesson?.weekday ?? '').trim();
+  const startTime = parseMoscowTime(lesson?.startTime);
+
+  if (!studentId || !allowedWeekday(weekday) || !startTime) {
+    return null;
+  }
+
+  const kind =
+    lesson?.kind === SCHEDULE_LESSON_KINDS.oneOff ? SCHEDULE_LESSON_KINDS.oneOff : SCHEDULE_LESSON_KINDS.regular;
+
+  return {
+    id: lesson?.id || crypto.randomUUID(),
+    studentId,
+    weekday,
+    startTime,
+    kind,
+    timezone: 'moscow',
+  };
+}
+
+function lessonSlotKey(lesson) {
+  const [hourValue, minuteValue = '0'] = String(lesson.startTime).split(':');
+  return slotKey(lesson.weekday, Number(hourValue), Number(minuteValue));
+}
+
+function allowedWeekday(weekday) {
+  return dayKeys.has(weekday);
 }

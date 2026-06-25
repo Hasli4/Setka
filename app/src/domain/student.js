@@ -45,7 +45,11 @@ export function normalizeStudentStatus(status) {
     return 'paused';
   }
 
-  return allowedStudentStatuses.has(value) ? value : 'new';
+  if (value === 'new' || value === 'debt' || value === 'archive') {
+    return 'active';
+  }
+
+  return allowedStudentStatuses.has(value) ? value : 'active';
 }
 
 function normalizeRegularLessons(regularLessons) {
@@ -69,13 +73,13 @@ function normalizeRegularLessons(regularLessons) {
         timezone: 'moscow',
       };
     })
-    .filter(Boolean)
-    .slice(0, 2);
+    .filter(Boolean);
 }
 
 function normalizeBilling(billing = {}) {
   const subscriptionPrice = normalizeMoney(billing.subscriptionPrice);
   const lessonsPerSubscription = normalizePositiveInteger(billing.lessonsPerSubscription);
+  const remainingLessons = normalizeFlexibleNumber(billing.remainingLessons);
   const singleLessonPrice =
     subscriptionPrice > 0 && lessonsPerSubscription > 0
       ? Math.round((subscriptionPrice / lessonsPerSubscription) * 100) / 100
@@ -84,6 +88,7 @@ function normalizeBilling(billing = {}) {
   return {
     subscriptionPrice,
     lessonsPerSubscription,
+    remainingLessons,
     singleLessonPrice,
   };
 }
@@ -96,6 +101,11 @@ function normalizeMoney(value) {
 function normalizePositiveInteger(value) {
   const amount = Number(value);
   return Number.isInteger(amount) && amount > 0 ? amount : 0;
+}
+
+function normalizeFlexibleNumber(value) {
+  const amount = Number(String(value ?? '').replace(',', '.'));
+  return Number.isFinite(amount) ? amount : 0;
 }
 
 function normalizeContacts(contacts) {

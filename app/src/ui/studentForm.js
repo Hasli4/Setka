@@ -34,7 +34,7 @@ export function openStudentForm({ title, student, onSubmit }) {
   duration.input.step = '5';
 
   const startedAt = createInput('Дата старта', 'startedAt', student?.startedAt ?? '', false, 'date');
-  const status = createStatusSelect(student?.status ?? 'new');
+  const status = createStatusSelect(student?.status ?? 'active');
   const regularLessons = createRegularLessonsFields(student?.regularLessons ?? []);
   const billing = createBillingFields(student?.billing ?? {});
   const contacts = createContactsFields(student?.contacts ?? []);
@@ -199,15 +199,11 @@ function createRegularLessonsFields(regularLessons) {
   const list = createElement('div', { className: 'regular-lessons-list' });
   const addButton = createElement('button', {
     className: 'secondary-button compact-button',
-    text: '+ Добавить второе занятие',
+    text: '+ Добавить занятие',
     attrs: { type: 'button' },
   });
 
   function addLessonRow(lesson = {}) {
-    if (list.children.length >= 2) {
-      return;
-    }
-
     const weekday = createSelectField(
       'День недели',
       'lessonWeekday',
@@ -245,7 +241,7 @@ function createRegularLessonsFields(regularLessons) {
   }
 
   function updateAddButton() {
-    addButton.hidden = list.children.length >= 2;
+    addButton.hidden = false;
   }
 
   for (const lesson of regularLessons) {
@@ -264,7 +260,7 @@ function createRegularLessonsFields(regularLessons) {
       createElement('h3', { text: 'Регулярные занятия (МСК)' }),
       createElement('p', {
         className: 'muted',
-        text: 'Укажите одно или два постоянных занятия в московском часовом поясе. Расписание обновится автоматически.',
+        text: 'Укажите постоянные занятия в московском часовом поясе. Расписание обновится автоматически.',
       }),
       list,
       addButton,
@@ -300,6 +296,13 @@ function createBillingFields(billing) {
     false,
     'number',
   );
+  const remainingLessons = createInput(
+    'Остаток занятий',
+    'remainingLessons',
+    billing.remainingLessons === undefined ? '' : String(billing.remainingLessons),
+    false,
+    'number',
+  );
   const singleLessonPrice = createInput(
     'Стоимость 1 занятия',
     'singleLessonPrice',
@@ -309,9 +312,10 @@ function createBillingFields(billing) {
   );
 
   subscriptionPrice.input.min = '0';
-  subscriptionPrice.input.step = '100';
+  subscriptionPrice.input.step = 'any';
   lessonsPerSubscription.input.min = '0';
   lessonsPerSubscription.input.step = '1';
+  remainingLessons.input.step = 'any';
   singleLessonPrice.input.readOnly = true;
 
   function updateSingleLessonPrice() {
@@ -330,7 +334,12 @@ function createBillingFields(billing) {
       createElement('h3', { text: 'Абонемент' }),
       createElement('div', {
         className: 'billing-grid',
-        children: [subscriptionPrice.field, lessonsPerSubscription.field, singleLessonPrice.field],
+        children: [
+          subscriptionPrice.field,
+          lessonsPerSubscription.field,
+          singleLessonPrice.field,
+          remainingLessons.field,
+        ],
       }),
     ],
   });
@@ -343,6 +352,7 @@ function createBillingFields(billing) {
       return {
         subscriptionPrice: subscriptionPrice.input.value,
         lessonsPerSubscription: lessonsPerSubscription.input.value,
+        remainingLessons: remainingLessons.input.value,
       };
     },
   };

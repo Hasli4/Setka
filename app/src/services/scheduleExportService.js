@@ -1,8 +1,11 @@
 import {
   SCHEDULE_DAYS,
   SCHEDULE_HOURS,
+  SCHEDULE_LESSON_KINDS,
   SCHEDULE_PRIORITIES,
+  SCHEDULE_SLOT_MINUTES,
   parseSlotKey,
+  slotKey,
   timeLabel,
   timezoneLabel,
 } from '../domain/schedule.js';
@@ -11,7 +14,6 @@ const priorityLabels = Object.fromEntries(SCHEDULE_PRIORITIES.map((priority) => 
 
 export function buildScheduleExportHtml(plans, students) {
   const studentById = new Map(students.map((student) => [student.id, student]));
-  const regularAssignments = buildRegularAssignments(students);
   const exportPlans = plans.filter((plan) => plan.includeInExport !== false);
 
   return `<!doctype html>
@@ -59,12 +61,16 @@ export function buildScheduleExportHtml(plans, students) {
     .grid { min-width: 1040px; display: grid; grid-template-columns: var(--time-col) repeat(7, minmax(120px, 1fr)) var(--time-col); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
     .cell { min-height: var(--cell); background: white; padding: 8px; display: grid; place-items: center; text-align: center; }
     .header-cell, .time-cell { background: #f8fafc; font-weight: 800; }
-    .slot { position: relative; overflow: hidden; }
-    .slot.green { background: rgba(34, 197, 94, .18); }
-    .slot.yellow { background: rgba(250, 204, 21, .22); }
-    .slot.red { background: rgba(239, 68, 68, .18); }
-    .slot.busy { background: rgba(59, 130, 246, .18); background-image: repeating-linear-gradient(45deg, rgba(59,130,246,.3) 0, rgba(59,130,246,.3) 9px, rgba(255,255,255,.25) 9px, rgba(255,255,255,.25) 18px); }
-    .slot.occupied { background: rgba(168, 85, 247, .18); background-image: repeating-linear-gradient(45deg, rgba(168,85,247,.34) 0, rgba(168,85,247,.34) 9px, rgba(255,255,255,.24) 9px, rgba(255,255,255,.24) 18px); font-weight: 800; }
+    .slot { position: relative; overflow: visible; display: grid; grid-template-rows: 1fr 1fr; padding: 0; }
+    .export-half { position: relative; min-height: calc(var(--cell) / 2); display: grid; place-items: center; padding: 2px 6px; }
+    .export-half + .export-half { border-top: 1px dashed rgba(107, 114, 128, .22); }
+    .export-half.green { background: rgba(34, 197, 94, .18); }
+    .export-half.yellow { background: rgba(250, 204, 21, .22); }
+    .export-half.red { background: rgba(239, 68, 68, .18); }
+    .export-half.busy { background: rgba(59, 130, 246, .18); background-image: repeating-linear-gradient(45deg, rgba(59,130,246,.3) 0, rgba(59,130,246,.3) 9px, rgba(255,255,255,.25) 9px, rgba(255,255,255,.25) 18px); }
+    .export-half.covered { color: transparent; }
+    .export-assignment { position: absolute; z-index: 2; inset: 3px 5px auto 5px; min-height: 24px; height: calc((var(--duration-units, 2) * 100%) - 6px); display: grid; place-items: center; padding: 6px 8px; border: 1px solid rgba(12,124,116,.28); border-radius: 8px; background: rgba(223,241,238,.88); color: var(--text); font-weight: 900; line-height: 1.15; overflow-wrap: anywhere; text-align: center; }
+    .export-assignment.one-off { border-color: rgba(188,108,37,.34); background: rgba(255,247,237,.92); }
     .slot small { color: var(--muted); font-weight: 600; }
   </style>
 </head>
@@ -78,7 +84,7 @@ export function buildScheduleExportHtml(plans, students) {
     <section class="panel tabs">
       ${exportPlans.map((plan, index) => `<button class="tab ${index === 0 ? 'active' : ''}" data-plan-tab="${escapeHtml(plan.id)}">${escapeHtml(plan.title)}</button>`).join('')}
     </section>
-    ${exportPlans.map((plan, index) => renderExportPlan(plan, studentById, regularAssignments, index === 0)).join('')}
+    ${exportPlans.map((plan, index) => renderExportPlan(plan, students, studentById, index === 0)).join('')}
   </main>
   <script>
     document.querySelectorAll('[data-plan-tab]').forEach((tab) => {
@@ -96,8 +102,9 @@ export function buildScheduleExportHtml(plans, students) {
 
 export function buildParentText(plan, students) {
   const studentById = new Map(students.map((student) => [student.id, student]));
-  const greenLines = collectPriorityLines(plan, studentById, 'green');
-  const yellowLines = collectPriorityLines(plan, studentById, 'yellow');
+  const context = buildExportContext(plan, students, studentById);
+  const greenLines = collectPriorityLines(plan, context, 'green');
+  const yellowLines = collectPriorityLines(plan, context, 'yellow');
   const lines = [`Свободное время на неделю, часовой пояс: ${timezoneLabel(plan.timezone)}.`];
 
   if (greenLines.length) {
@@ -115,7 +122,9 @@ export function buildParentText(plan, students) {
   return lines.join('\n');
 }
 
-function renderExportPlan(plan, studentById, regularAssignments, active) {
+function renderExportPlan(plan, students, studentById, active) {
+  const context = buildExportContext(plan, students, studentById);
+
   return `<section class="panel schedule-card ${active ? 'active' : ''}" data-plan-panel="${escapeHtml(plan.id)}">
     <h2>${escapeHtml(plan.title)}</h2>
     <p class="hint">Время показано для: ${escapeHtml(timezoneLabel(plan.timezone))}</p>
@@ -124,41 +133,122 @@ function renderExportPlan(plan, studentById, regularAssignments, active) {
         <div class="cell header-cell"></div>
         ${SCHEDULE_DAYS.map((day) => `<div class="cell header-cell">${escapeHtml(day.label)}</div>`).join('')}
         <div class="cell header-cell"></div>
-        ${SCHEDULE_HOURS.map((hour) => renderExportHourRow(plan, studentById, regularAssignments, hour)).join('')}
+        ${SCHEDULE_HOURS.map((hour) => renderExportHourRow(plan, context, hour)).join('')}
       </div>
     </div>
   </section>`;
 }
 
-function renderExportHourRow(plan, studentById, regularAssignments, hour) {
+function renderExportHourRow(plan, context, hour) {
   return `<div class="cell time-cell">${escapeHtml(timeLabel(hour, plan.timezone))}</div>
-    ${SCHEDULE_DAYS.map((day) => renderExportSlot(plan, studentById, regularAssignments, `${day.key}_${hour}`)).join('')}
+    ${SCHEDULE_DAYS.map((day) => renderExportSlot(plan, context, `${day.key}_${hour}`)).join('')}
     <div class="cell time-cell">${escapeHtml(timeLabel(hour, plan.timezone))}</div>`;
 }
 
-function renderExportSlot(plan, studentById, regularAssignments, key) {
-  const studentId = regularAssignments.get(key) ?? plan.assignments[key];
-  const priority = plan.painted[key];
-  const student = studentId ? studentById.get(studentId) : null;
+function renderExportSlot(plan, context, key) {
+  const parsed = parseSlotKey(key);
 
-  if (studentId) {
-    return `<div class="cell slot occupied">${plan.hideNames ? 'Занято' : escapeHtml(scheduleStudentName(student))}</div>`;
+  return `<div class="cell slot">
+    ${SCHEDULE_SLOT_MINUTES.map((minute) => renderExportHalf(plan, context, parsed.dayKey, parsed.hour, minute)).join('')}
+  </div>`;
+}
+
+function renderExportHalf(plan, context, dayKey, hour, minute) {
+  const key = slotKeyFromParts(dayKey, hour, minute);
+
+  if (!key) {
+    return '<div class="export-half unavailable"></div>';
+  }
+
+  const assignment = context.assignmentsBySlot.get(key);
+  const priority = plan.painted[key];
+
+  if (assignment) {
+    const durationUnits = Math.max(1, Math.ceil(Number(assignment.student?.defaultLessonDurationMinutes || 60) / 30));
+    const className = assignment.lesson?.kind === SCHEDULE_LESSON_KINDS.oneOff ? 'export-assignment one-off' : 'export-assignment';
+    return `<div class="export-half occupied"><div class="${className}" style="--duration-units: ${durationUnits};">${plan.hideNames ? 'Занято' : escapeHtml(scheduleStudentName(assignment.student))}</div></div>`;
+  }
+
+  if (context.coveredSlotKeys.has(key)) {
+    return '<div class="export-half covered"></div>';
   }
 
   if (priority) {
-    return `<div class="cell slot ${escapeHtml(priority)}"><small>${escapeHtml(priorityLabels[priority] || 'Свободно')}</small></div>`;
+    return `<div class="export-half ${escapeHtml(priority)}"><small>${escapeHtml(priorityLabels[priority] || 'Свободно')}</small></div>`;
   }
 
-  return '<div class="cell slot"><small>Пусто</small></div>';
+  return `<div class="export-half">${minute === 0 ? '<small>Пусто</small>' : ''}</div>`;
 }
 
-function collectPriorityLines(plan, studentById, priority) {
+function buildExportContext(plan, students, studentById) {
+  const assignments = [];
+  const planLessons = plan.lessonsInitialized ? plan.lessons ?? [] : buildRegularLessons(students);
+
+  for (const lesson of planLessons) {
+    const slot = scheduleLessonSlotKey(lesson);
+    const student = studentById.get(lesson.studentId);
+
+    if (!slot || !student) {
+      continue;
+    }
+
+    assignments.push({
+      source: 'lesson',
+      slotKey: slot,
+      student,
+      studentId: student.id,
+      lesson,
+      lessonId: lesson.id,
+    });
+  }
+
+  for (const [slotKeyValue, studentId] of Object.entries(plan.assignments ?? {})) {
+    const student = studentById.get(studentId);
+
+    if (!parseSlotKey(slotKeyValue) || !student) {
+      continue;
+    }
+
+    assignments.push({
+      source: 'manual',
+      slotKey: slotKeyValue,
+      student,
+      studentId,
+      lesson: null,
+      lessonId: null,
+    });
+  }
+
+  const assignmentsBySlot = new Map(assignments.map((assignment) => [assignment.slotKey, assignment]));
+  const coveredSlotKeys = new Set();
+
+  for (const assignment of assignments) {
+    const parsed = parseSlotKey(assignment.slotKey);
+    const durationMinutes = Math.max(30, Math.ceil(Number(assignment.student.defaultLessonDurationMinutes || 60) / 30) * 30);
+
+    if (!parsed) {
+      continue;
+    }
+
+    for (let offset = 30; offset < durationMinutes; offset += 30) {
+      const coveredKey = slotKeyFromTotalMinutes(parsed.dayKey, parsed.totalMinutes + offset);
+
+      if (coveredKey && !assignmentsBySlot.has(coveredKey)) {
+        coveredSlotKeys.add(coveredKey);
+      }
+    }
+  }
+
+  return { assignments, assignmentsBySlot, coveredSlotKeys };
+}
+
+function collectPriorityLines(plan, context, priority) {
   return Object.entries(plan.painted)
-    .filter(([key, value]) => value === priority && !plan.assignments[key])
+    .filter(([key, value]) => value === priority && !context.assignmentsBySlot.has(key) && !context.coveredSlotKeys.has(key))
     .map(([key]) => {
       const parsed = parseSlotKey(key);
-      const day = SCHEDULE_DAYS.find((item) => item.key === parsed.dayKey);
-      return parsed && day ? `${day.label} ${timeLabel(parsed.hour, plan.timezone)}` : null;
+      const day = parsed ? SCHEDULE_DAYS.find((item) => item.key === parsed.dayKey) : null;
+      return parsed && day ? `${day.label} ${slotTimeLabel(parsed, plan.timezone)}` : null;
     })
     .filter(Boolean);
 }
@@ -176,8 +266,8 @@ function scheduleStudentName(student) {
   return student?.nickname?.trim() || student?.fullName || 'Занято';
 }
 
-function buildRegularAssignments(students) {
-  const assignments = new Map();
+function buildRegularLessons(students) {
+  const lessons = [];
 
   for (const student of students) {
     for (const lesson of student.regularLessons ?? []) {
@@ -185,13 +275,44 @@ function buildRegularAssignments(students) {
         continue;
       }
 
-      const key = `${lesson.weekday}_${Number(String(lesson.startTime).slice(0, 2))}`;
-
-      if (!assignments.has(key)) {
-        assignments.set(key, student.id);
-      }
+      lessons.push({
+        id: lesson.id || `${student.id}-${lesson.weekday}-${lesson.startTime}`,
+        studentId: student.id,
+        weekday: lesson.weekday,
+        startTime: lesson.startTime,
+        kind: SCHEDULE_LESSON_KINDS.regular,
+        timezone: 'moscow',
+      });
     }
   }
 
-  return assignments;
+  return lessons;
+}
+
+function scheduleLessonSlotKey(lesson) {
+  if (!lesson?.weekday || !lesson?.startTime) {
+    return null;
+  }
+
+  const [hourValue, minuteValue = '0'] = String(lesson.startTime).split(':');
+  return slotKeyFromParts(lesson.weekday, Number(hourValue), Number(minuteValue));
+}
+
+function slotKeyFromTotalMinutes(dayKey, totalMinutes) {
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  return slotKeyFromParts(dayKey, hour, minute);
+}
+
+function slotKeyFromParts(dayKey, hour, minute = 0) {
+  try {
+    return slotKey(dayKey, hour, minute);
+  } catch {
+    return null;
+  }
+}
+
+function slotTimeLabel(parsed, timezone) {
+  const hourLabel = timeLabel(parsed.hour, timezone).slice(0, 2);
+  return `${hourLabel}:${String(parsed.minute).padStart(2, '0')}`;
 }

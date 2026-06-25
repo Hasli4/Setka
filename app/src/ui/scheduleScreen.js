@@ -1,9 +1,13 @@
 import {
   SCHEDULE_DAYS,
   SCHEDULE_HOURS,
+  SCHEDULE_LESSON_KINDS,
+  SCHEDULE_PLAN_TYPES,
   SCHEDULE_PRIORITIES,
+  SCHEDULE_SLOT_MINUTES,
   SCHEDULE_TIMEZONES,
   parseSlotKey,
+  slotKey,
   timeLabel,
 } from '../domain/schedule.js';
 import * as scheduleService from '../services/scheduleService.js';
@@ -75,34 +79,6 @@ function renderLoading() {
 }
 
 function renderHeader(screen, activePlan) {
-  const newButton = createElement('button', {
-    className: 'primary-button',
-    text: 'Новое расписание',
-    attrs: { type: 'button' },
-  });
-  newButton.addEventListener('click', async () => {
-    const plan = await scheduleService.createPlan(`Расписание ${screen.plans.length + 1}`);
-    screen.plans.push(plan);
-    screen.ui.activePlanId = plan.id;
-    screen.ui.comparePlanId = plan.id;
-    await scheduleService.saveScheduleUi(screen.ui);
-    render(screen);
-  });
-
-  const duplicateButton = createElement('button', {
-    className: 'secondary-button',
-    text: 'Дублировать',
-    attrs: { type: 'button' },
-  });
-  duplicateButton.addEventListener('click', async () => {
-    const plan = await scheduleService.duplicatePlan(activePlan);
-    screen.plans.push(plan);
-    screen.ui.activePlanId = plan.id;
-    screen.ui.comparePlanId = plan.id;
-    await scheduleService.saveScheduleUi(screen.ui);
-    render(screen);
-  });
-
   return createElement('header', {
     className: 'page-header',
     children: [
@@ -114,7 +90,14 @@ function renderHeader(screen, activePlan) {
       }),
       createElement('div', {
         className: 'header-tools schedule-header-tools',
-        children: [newButton, duplicateButton],
+        children: [
+          createElement('span', {
+            className: 'hint',
+            text: isPermanentPlan(activePlan)
+              ? 'Постоянное расписание связано с карточками учеников.'
+              : 'Текущая неделя хранит временные изменения отдельно.',
+          }),
+        ],
       }),
     ],
   });
@@ -129,7 +112,7 @@ function renderTabs(screen) {
         attrs: { type: 'button' },
         children: [
           createElement('span', { text: plan.title }),
-          screen.plans.length > 1
+          !plan.fixed && screen.plans.length > 1
             ? createElement('span', { className: 'tab-close', text: 'x', attrs: { title: 'Удалить' } })
             : createElement('span'),
         ],
@@ -307,6 +290,7 @@ function renderScheduleCard(screen, plan, { readonly, label }) {
 
 function renderGrid(screen, plan, readonly) {
   const grid = createElement('div', { className: 'native-schedule-grid' });
+  const renderContext = buildPlanRenderContext(screen, plan);
 
   grid.append(createElement('div', { className: 'schedule-cell header-cell' }));
 
@@ -321,41 +305,93 @@ function renderGrid(screen, plan, readonly) {
 
     for (const day of SCHEDULE_DAYS) {
       const key = `${day.key}_${hour}`;
-      grid.append(renderSlot(screen, plan, key, readonly));
+      grid.append(renderSlot(screen, plan, key, readonly, renderContext));
     }
 
     grid.append(createElement('div', { className: 'schedule-cell time-cell', text: timeLabel(hour, plan.timezone) }));
   }
 
+  const assignmentLayer = createElement('div', { className: 'assignment-layer' });
+
+  for (const assignment of renderContext.assignments) {
+    const overlay = renderAssignmentOverlay(screen, plan, assignment, readonly);
+
+    if (overlay) {
+      assignmentLayer.append(overlay);
+    }
+  }
+
+  grid.append(assignmentLayer);
+
   return createElement('div', { className: 'native-grid-wrap', children: [grid] });
 }
 
-function renderSlot(screen, plan, slotKey, readonly) {
-  const assignment = getSlotAssignment(screen, plan, slotKey);
-  const priority = plan.painted[slotKey];
-  const student = assignment?.student ?? null;
+function renderSlot(screen, plan, slotKey, readonly, renderContext) {
+  const parsed = parseSlotKey(slotKey);
+  const halfSlots = SCHEDULE_SLOT_MINUTES.map((minute) => {
+    const key = slotKeyFromParts(parsed.dayKey, parsed.hour, minute);
+    return key
+      ? {
+          key,
+          minute,
+          assignment: renderContext.assignmentsBySlot.get(key),
+          covered: renderContext.coveredSlotKeys.has(key),
+          priority: plan.painted[key],
+        }
+      : null;
+  });
+  const hasAssignment = halfSlots.some((item) => item?.assignment);
+  const hasCoveredSlot = halfSlots.some((item) => item?.covered);
+  const hasLongAssignment = halfSlots.some((item) => (item?.assignment?.student?.defaultLessonDurationMinutes || 60) > 60);
   const slot = createElement('div', {
     className: [
       'schedule-cell',
       'native-slot',
+      hasAssignment ? 'occupied' : '',
+      hasCoveredSlot ? 'covered-by-lesson' : '',
+      halfSlots.some((item) => item?.assignment?.lesson?.kind !== SCHEDULE_LESSON_KINDS.oneOff) ? 'regular-occupied' : '',
+      hasLongAssignment ? 'long-lesson-slot' : '',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    attrs: { 'data-hour-key': slotKey },
+  });
+
+  for (const halfSlot of halfSlots) {
+    slot.append(renderSlotHalf(screen, plan, halfSlot, readonly));
+  }
+
+  return slot;
+}
+
+function renderSlotHalf(screen, plan, halfSlot, readonly) {
+  if (!halfSlot) {
+    return createElement('div', { className: 'slot-half unavailable' });
+  }
+
+  const { key, minute, assignment, covered, priority } = halfSlot;
+  const half = createElement('div', {
+    className: [
+      'slot-half',
+      minute === 0 ? 'slot-half-start' : 'slot-half-middle',
       assignment ? 'occupied' : '',
-      assignment?.source === 'regular' ? 'regular-occupied' : '',
-      student?.defaultLessonDurationMinutes > 60 ? 'long-lesson-slot' : '',
+      covered ? 'covered' : '',
       priority ? `priority-${priority}` : '',
     ]
       .filter(Boolean)
       .join(' '),
-    attrs: { 'data-slot-key': slotKey, 'data-student-id': student?.id },
+    attrs: {
+      'data-slot-key': key,
+      title: `Начало ${parseSlotKey(key).startTime}`,
+    },
   });
 
-  if (assignment) {
-    slot.append(renderAssignment(screen, plan, slotKey, assignment, readonly));
-  } else {
-    slot.append(createElement('span', { className: 'slot-empty-label', text: priorityLabel(priority) }));
+  if (!assignment && !covered && minute === 0) {
+    half.append(createElement('span', { className: 'slot-empty-label', text: priorityLabel(priority) }));
   }
 
   if (!readonly) {
-    slot.addEventListener('click', async () => {
+    half.addEventListener('click', async () => {
       if (assignment) {
         return;
       }
@@ -363,7 +399,7 @@ function renderSlot(screen, plan, slotKey, readonly) {
       if (screen.selectedStudentId && !plan.paintMode) {
         const studentId = screen.selectedStudentId;
         screen.selectedStudentId = null;
-        await assignStudentRegularLesson(screen, studentId, slotKey);
+        await addStudentLessonToPlan(screen, plan, studentId, key);
         return;
       }
 
@@ -371,29 +407,59 @@ function renderSlot(screen, plan, slotKey, readonly) {
         return;
       }
 
-      await replacePlan(screen, await scheduleService.togglePriority(plan, slotKey, plan.priorityColor));
+      await replacePlan(screen, await scheduleService.togglePriority(plan, key, plan.priorityColor));
     });
 
-    slot.addEventListener('dragover', (event) => {
+    half.addEventListener('dragover', (event) => {
       event.preventDefault();
-      slot.classList.add('over');
+      half.classList.add('over');
     });
 
-    slot.addEventListener('dragleave', () => slot.classList.remove('over'));
+    half.addEventListener('dragleave', () => half.classList.remove('over'));
 
-    slot.addEventListener('drop', async (event) => {
+    half.addEventListener('drop', async (event) => {
       event.preventDefault();
-      slot.classList.remove('over');
-      await handleDrop(screen, plan, slotKey);
+      half.classList.remove('over');
+      await handleDrop(screen, plan, key);
     });
   }
 
-  return slot;
+  return half;
+}
+
+function renderAssignmentOverlay(screen, plan, assignment, readonly) {
+  const parsed = parseSlotKey(assignment.slotKey);
+  const dayIndex = SCHEDULE_DAYS.findIndex((day) => day.key === parsed?.dayKey);
+  const hourIndex = SCHEDULE_HOURS.indexOf(parsed?.hour);
+
+  if (!parsed || dayIndex < 0 || hourIndex < 0) {
+    return null;
+  }
+
+  const durationMinutes = getDurationMinutes(assignment.student);
+  const rowSpan = Math.max(1, Math.ceil((parsed.minute + durationMinutes) / 60));
+  const spanMinutes = rowSpan * 60;
+  const offsetPercent = (parsed.minute / spanMinutes) * 100;
+  const heightPercent = (durationMinutes / spanMinutes) * 100;
+
+  return createElement('div', {
+    className: 'assignment-overlay-slot',
+    attrs: {
+      'data-overlay-slot-key': assignment.slotKey,
+      style: [
+        `grid-column: ${dayIndex + 2}`,
+        `grid-row: ${hourIndex + 2} / span ${rowSpan}`,
+        `--lesson-offset: ${offsetPercent}%`,
+        `--lesson-height: ${heightPercent}%`,
+      ].join('; '),
+    },
+    children: [renderAssignment(screen, plan, assignment.slotKey, assignment, readonly)],
+  });
 }
 
 function renderAssignment(screen, plan, slotKey, assignment, readonly) {
   const { student } = assignment;
-  const durationMinutes = student?.defaultLessonDurationMinutes || 60;
+  const durationUnits = getDurationUnits(student);
   const children = [
     createElement('strong', {
       text: plan.hideNames ? 'Занято' : scheduleStudentName(student),
@@ -401,19 +467,24 @@ function renderAssignment(screen, plan, slotKey, assignment, readonly) {
     }),
   ];
 
-  if (durationMinutes !== 60) {
-    children.push(createElement('span', { className: 'assignment-duration', text: `${durationMinutes} мин` }));
+  if (!readonly) {
+    children.push(
+      createElement('button', { className: 'slot-clear-button', text: 'x', attrs: { type: 'button', title: 'Очистить' } }),
+    );
   }
 
-  children.push(
-    !readonly
-      ? createElement('button', { className: 'slot-clear-button', text: 'x', attrs: { type: 'button', title: 'Очистить' } })
-      : createElement('span'),
-  );
-
   const block = createElement('div', {
-    className: `assignment-block ${durationMinutes > 60 ? 'long-lesson' : ''}`,
-    attrs: { draggable: readonly ? undefined : 'true' },
+    className: [
+      'assignment-block',
+      durationUnits > 2 ? 'long-lesson' : '',
+      assignment.lesson?.kind === SCHEDULE_LESSON_KINDS.oneOff ? 'one-off-lesson' : 'regular-lesson',
+    ]
+      .filter(Boolean)
+      .join(' '),
+    attrs: {
+      draggable: readonly ? undefined : 'true',
+      style: `--duration-units: ${durationUnits};`,
+    },
     children,
   });
 
@@ -430,18 +501,19 @@ function renderAssignment(screen, plan, slotKey, assignment, readonly) {
       dragPayload = {
         type: 'assignment',
         source: assignment.source,
+        kind: assignment.lesson?.kind,
         planId: plan.id,
         slotKey,
         studentId: student?.id,
-        regularLessonId: assignment.lesson?.id,
+        lessonId: assignment.lesson?.id,
       };
     });
 
     block.querySelector('.slot-clear-button').addEventListener('click', async (event) => {
       event.stopPropagation();
 
-      if (assignment.source === 'regular') {
-        await clearStudentRegularLesson(screen, student.id, assignment.lesson.id);
+      if (assignment.source === 'lesson') {
+        await clearPlanLesson(screen, plan, assignment.lesson);
       } else {
         await replacePlan(screen, await scheduleService.clearStudent(plan, slotKey));
       }
@@ -517,129 +589,306 @@ async function handleDrop(screen, plan, targetSlot) {
   const payload = dragPayload;
   dragPayload = null;
 
-  if (payload.type === 'assignment' && payload.source === 'regular') {
-    await moveStudentRegularLesson(screen, payload.studentId, payload.regularLessonId, targetSlot);
+  if (payload.type === 'assignment' && payload.source === 'lesson') {
+    await movePlanLesson(screen, plan, payload.lessonId, targetSlot);
     return;
   }
 
   if (payload.type === 'assignment' && payload.studentId) {
-    await assignStudentRegularLesson(screen, payload.studentId, targetSlot);
+    await moveManualAssignment(screen, plan, payload.slotKey, payload.studentId, targetSlot);
     return;
   }
 
   if (payload.type === 'student') {
-    await assignStudentRegularLesson(screen, payload.studentId, targetSlot);
+    await addStudentLessonToPlan(screen, plan, payload.studentId, targetSlot);
   } else {
     await replacePlan(screen, await scheduleService.assignStudent(plan, targetSlot, payload.studentId));
   }
 }
 
-function getSlotAssignment(screen, plan, slotKey) {
-  const regularAssignment = getRegularAssignment(screen, slotKey);
+function buildPlanRenderContext(screen, plan) {
+  const assignments = collectPlanAssignments(screen, plan);
+  const assignmentsBySlot = new Map(assignments.map((assignment) => [assignment.slotKey, assignment]));
+  const coveredSlotKeys = new Set();
 
-  if (regularAssignment) {
-    return regularAssignment;
-  }
+  for (const assignment of assignments) {
+    const parsed = parseSlotKey(assignment.slotKey);
+    const durationMinutes = getDurationMinutes(assignment.student);
 
-  const studentId = plan.assignments[slotKey];
-  const student = studentId ? screen.students.find((item) => item.id === studentId) : null;
+    if (!parsed) {
+      continue;
+    }
 
-  return studentId
-    ? {
-        source: 'manual',
-        student,
-        lesson: null,
-      }
-    : null;
-}
+    for (let offset = 30; offset < durationMinutes; offset += 30) {
+      const coveredKey = slotKeyFromTotalMinutes(parsed.dayKey, parsed.totalMinutes + offset);
 
-function getRegularAssignment(screen, slotKey) {
-  for (const student of screen.students) {
-    for (const lesson of student.regularLessons ?? []) {
-      if (regularLessonSlotKey(lesson) === slotKey) {
-        return {
-          source: 'regular',
-          student,
-          lesson,
-        };
+      if (coveredKey && !assignmentsBySlot.has(coveredKey)) {
+        coveredSlotKeys.add(coveredKey);
       }
     }
   }
 
-  return null;
+  return { assignments, assignmentsBySlot, coveredSlotKeys };
 }
 
-async function assignStudentRegularLesson(screen, studentId, slotKey) {
-  const occupied = getRegularAssignment(screen, slotKey);
+function collectPlanAssignments(screen, plan) {
+  const assignments = [];
+  const cardLessons = buildLessonsFromStudentCards(screen.students);
+  const cardLessonIds = new Set(cardLessons.map((lesson) => lesson.id));
+  const localLessons = plan.lessons ?? [];
+  const hiddenRegularLessonIds = new Set(plan.hiddenRegularLessonIds ?? []);
+  const regularOverrides = new Map(
+    localLessons
+      .filter((lesson) => lesson.kind === SCHEDULE_LESSON_KINDS.regular && cardLessonIds.has(lesson.id))
+      .map((lesson) => [lesson.id, lesson]),
+  );
+  const lessons = isPermanentPlan(plan)
+    ? cardLessons
+    : [
+        ...cardLessons
+          .filter((lesson) => !hiddenRegularLessonIds.has(lesson.id))
+          .map((lesson) => regularOverrides.get(lesson.id) ?? lesson),
+        ...localLessons.filter(
+          (lesson) =>
+            lesson.kind === SCHEDULE_LESSON_KINDS.oneOff ||
+            (lesson.kind === SCHEDULE_LESSON_KINDS.regular && !cardLessonIds.has(lesson.id) && lesson.scope === 'week'),
+        ),
+      ];
 
-  if (occupied && occupied.student.id !== studentId) {
-    window.alert('Этот слот уже занят другим учеником.');
-    return;
+  for (const lesson of lessons) {
+    const key = scheduleLessonSlotKey(lesson);
+    const student = screen.students.find((item) => item.id === lesson.studentId);
+
+    if (!key || !student) {
+      continue;
+    }
+
+    assignments.push({
+      source: 'lesson',
+      slotKey: key,
+      student,
+      studentId: student.id,
+      lesson,
+      lessonId: lesson.id,
+    });
   }
 
+  for (const [key, studentId] of Object.entries(plan.assignments ?? {})) {
+    const student = screen.students.find((item) => item.id === studentId);
+
+    if (!parseSlotKey(key) || !student) {
+      continue;
+    }
+
+    assignments.push({
+      source: 'manual',
+      slotKey: key,
+      student,
+      studentId,
+      lesson: null,
+      lessonId: null,
+    });
+  }
+
+  return assignments;
+}
+
+async function addStudentLessonToPlan(screen, plan, studentId, slotKey) {
   const student = screen.students.find((item) => item.id === studentId);
-  const lesson = createRegularLessonFromSlot(slotKey);
+  const parsed = parseSlotKey(slotKey);
 
-  if (!student || !lesson) {
+  if (!student || !parsed) {
     return;
   }
 
-  const lessons = [...(student.regularLessons ?? [])];
-  const existingSlotIndex = lessons.findIndex((item) => regularLessonSlotKey(item) === slotKey);
+  const kind = await askLessonKind(student, parsed.startTime);
 
-  if (existingSlotIndex >= 0) {
-    lessons[existingSlotIndex] = { ...lesson, id: lessons[existingSlotIndex].id };
-  } else if (lessons.length < 2) {
-    lessons.push(lesson);
-  } else {
-    window.alert(
-      'У ученика уже указаны два регулярных занятия. Перенесите существующее занятие или уберите одно в карточке.',
-    );
+  if (!kind) {
     return;
   }
 
-  await persistRegularLessons(screen, student.id, lessons);
+  const lesson = {
+    id: crypto.randomUUID(),
+    studentId: student.id,
+    weekday: parsed.dayKey,
+    startTime: parsed.startTime,
+    kind,
+    timezone: 'moscow',
+  };
+
+  await savePlanLesson(screen, plan, lesson);
 }
 
-async function moveStudentRegularLesson(screen, studentId, lessonId, targetSlot) {
-  const occupied = getRegularAssignment(screen, targetSlot);
+async function savePlanLesson(screen, plan, lesson) {
+  const student = screen.students.find((item) => item.id === lesson.studentId);
+  const targetSlot = scheduleLessonSlotKey(lesson);
 
-  if (occupied && occupied.student.id !== studentId) {
-    window.alert('Этот слот уже занят другим учеником.');
+  if (!student || !targetSlot) {
     return;
   }
 
-  const student = screen.students.find((item) => item.id === studentId);
-  const lesson = createRegularLessonFromSlot(targetSlot, lessonId);
-
-  if (!student || !lesson) {
+  if (isPermanentPlan(plan) && lesson.kind === SCHEDULE_LESSON_KINDS.oneOff) {
+    window.alert('Разовые занятия добавляются в текущую неделю, а постоянное расписание формируется из карточек учеников.');
     return;
   }
 
-  const lessons = [...(student.regularLessons ?? [])];
-  const index = lessons.findIndex((item) => item.id === lessonId);
-
-  if (index >= 0) {
-    lessons[index] = lesson;
-  } else {
-    lessons.push(lesson);
+  if (hasTimeCollision(screen, plan, student.id, lesson.id, targetSlot, student.defaultLessonDurationMinutes)) {
+    window.alert('Это время пересекается с другим занятием.');
+    return;
   }
 
-  await persistRegularLessons(screen, student.id, lessons.slice(0, 2));
+  if (isPermanentPlan(plan) && lesson.kind === SCHEDULE_LESSON_KINDS.regular) {
+    await upsertStudentRegularLesson(screen, student, lesson);
+    return;
+  }
+
+  await replacePlan(
+    screen,
+    await scheduleService.saveLesson(plan, {
+      ...lesson,
+      scope: lesson.kind === SCHEDULE_LESSON_KINDS.regular ? 'week' : lesson.scope,
+    }),
+  );
 }
 
-async function clearStudentRegularLesson(screen, studentId, lessonId) {
+async function movePlanLesson(screen, plan, lessonId, targetSlot) {
+  const assignment = findRenderedAssignment(screen, plan, lessonId);
+  const lesson = assignment?.lesson;
+  const parsed = parseSlotKey(targetSlot);
+  const student = lesson ? screen.students.find((item) => item.id === lesson.studentId) : null;
+
+  if (!lesson || !parsed || !student) {
+    return;
+  }
+
+  if (hasTimeCollision(screen, plan, student.id, lesson.id, targetSlot, student.defaultLessonDurationMinutes)) {
+    window.alert('Это время пересекается с другим занятием.');
+    return;
+  }
+
+  const movedLesson = {
+    ...lesson,
+    weekday: parsed.dayKey,
+    startTime: parsed.startTime,
+    timezone: 'moscow',
+  };
+
+  if (isPermanentPlan(plan) && lesson.kind === SCHEDULE_LESSON_KINDS.regular) {
+    await upsertStudentRegularLesson(screen, student, movedLesson);
+    return;
+  }
+
+  await replacePlan(
+    screen,
+    await scheduleService.saveLesson(plan, {
+      ...movedLesson,
+      scope: movedLesson.kind === SCHEDULE_LESSON_KINDS.regular ? 'week' : movedLesson.scope,
+    }),
+  );
+}
+
+async function moveManualAssignment(screen, plan, sourceSlot, studentId, targetSlot) {
   const student = screen.students.find((item) => item.id === studentId);
 
   if (!student) {
     return;
   }
 
-  await persistRegularLessons(
-    screen,
-    student.id,
-    (student.regularLessons ?? []).filter((lesson) => lesson.id !== lessonId),
-  );
+  if (hasTimeCollision(screen, plan, student.id, null, targetSlot, student.defaultLessonDurationMinutes, sourceSlot)) {
+    window.alert('Это время пересекается с другим занятием.');
+    return;
+  }
+
+  await replacePlan(screen, await scheduleService.moveStudent(plan, sourceSlot, targetSlot));
+}
+
+async function clearPlanLesson(screen, plan, lesson) {
+  if (isPermanentPlan(plan) && lesson.kind === SCHEDULE_LESSON_KINDS.regular) {
+    const student = screen.students.find((item) => item.id === lesson.studentId);
+
+    if (student) {
+      await persistRegularLessons(
+        screen,
+        student.id,
+        (student.regularLessons ?? []).filter((item) => item.id !== lesson.id),
+      );
+    }
+
+    return;
+  }
+
+  if (isCurrentWeekPlan(plan) && lesson.kind === SCHEDULE_LESSON_KINDS.regular) {
+    await replacePlan(
+      screen,
+      await scheduleService.updatePlan(plan, {
+        lessons: (plan.lessons ?? []).filter((item) => item.id !== lesson.id),
+        hiddenRegularLessonIds: [...new Set([...(plan.hiddenRegularLessonIds ?? []), lesson.id])],
+      }),
+    );
+    return;
+  }
+
+  await replacePlan(screen, await scheduleService.clearLesson(plan, lesson.id));
+}
+
+function askLessonKind(student, startTime) {
+  return new Promise((resolve) => {
+    const dialog = createElement('dialog', { className: 'dialog lesson-kind-dialog' });
+    let settled = false;
+
+    function finish(kind) {
+      settled = true;
+      dialog.close();
+      resolve(kind);
+    }
+
+    const oneOffButton = createElement('button', {
+      className: 'secondary-button',
+      text: 'Разовое',
+      attrs: { type: 'button' },
+    });
+    const regularButton = createElement('button', {
+      className: 'primary-button',
+      text: 'Постоянное',
+      attrs: { type: 'button' },
+    });
+    const cancelButton = createElement('button', {
+      className: 'secondary-button',
+      text: 'Отмена',
+      attrs: { type: 'button' },
+    });
+
+    oneOffButton.addEventListener('click', () => finish(SCHEDULE_LESSON_KINDS.oneOff));
+    regularButton.addEventListener('click', () => finish(SCHEDULE_LESSON_KINDS.regular));
+    cancelButton.addEventListener('click', () => finish(null));
+    dialog.addEventListener('close', () => {
+      dialog.remove();
+
+      if (!settled) {
+        resolve(null);
+      }
+    });
+
+    dialog.append(
+      createElement('div', {
+        className: 'lesson-kind-content',
+        children: [
+          createElement('h2', { text: 'Как добавить занятие?' }),
+          createElement('p', {
+            className: 'muted',
+            text: `${scheduleStudentName(student)} · ${startTime}. Разовое останется только в этом расписании, постоянное добавится в карточку ученика.`,
+          }),
+          createElement('div', {
+            className: 'lesson-kind-actions',
+            children: [oneOffButton, regularButton, cancelButton],
+          }),
+        ],
+      }),
+    );
+    document.body.append(dialog);
+    dialog.showModal();
+    oneOffButton.focus();
+  });
 }
 
 async function persistRegularLessons(screen, studentId, regularLessons) {
@@ -653,30 +902,150 @@ async function persistRegularLessons(screen, studentId, regularLessons) {
   }
 }
 
-function createRegularLessonFromSlot(slotKey, lessonId = crypto.randomUUID()) {
-  const parsed = parseSlotKey(slotKey);
-
-  if (!parsed) {
-    return null;
-  }
-
-  return {
-    id: lessonId,
-    weekday: parsed.dayKey,
-    startTime: `${String(parsed.hour).padStart(2, '0')}:00`,
+async function upsertStudentRegularLesson(screen, student, lesson) {
+  const regularLessons = [...(student.regularLessons ?? [])];
+  const index = regularLessons.findIndex((item) => item.id === lesson.id);
+  const studentLesson = {
+    id: lesson.id,
+    weekday: lesson.weekday,
+    startTime: lesson.startTime,
     timezone: 'moscow',
   };
+
+  if (index >= 0) {
+    regularLessons[index] = studentLesson;
+  } else {
+    regularLessons.push(studentLesson);
+  }
+
+  await persistRegularLessons(screen, student.id, regularLessons);
 }
 
-function regularLessonSlotKey(lesson) {
+function buildLessonsFromStudentCards(students) {
+  const lessons = [];
+
+  for (const student of students) {
+    for (const lesson of student.regularLessons ?? []) {
+      if (!scheduleLessonSlotKey(lesson)) {
+        continue;
+      }
+
+      lessons.push({
+        id: lesson.id || crypto.randomUUID(),
+        studentId: student.id,
+        weekday: lesson.weekday,
+        startTime: lesson.startTime,
+        kind: SCHEDULE_LESSON_KINDS.regular,
+        timezone: 'moscow',
+      });
+    }
+  }
+
+  return lessons;
+}
+
+function scheduleLessonSlotKey(lesson) {
   if (!lesson?.weekday || !lesson?.startTime) {
     return null;
   }
 
-  return `${lesson.weekday}_${Number(String(lesson.startTime).slice(0, 2))}`;
+  const [hourValue, minuteValue = '0'] = String(lesson.startTime).split(':');
+  return slotKeyFromParts(lesson.weekday, Number(hourValue), Number(minuteValue));
+}
+
+function slotKeyFromTotalMinutes(dayKey, totalMinutes) {
+  const hour = Math.floor(totalMinutes / 60);
+  const minute = totalMinutes % 60;
+  return slotKeyFromParts(dayKey, hour, minute);
+}
+
+function slotKeyFromParts(dayKey, hour, minute = 0) {
+  try {
+    return slotKey(dayKey, hour, minute);
+  } catch {
+    return null;
+  }
+}
+
+function getDurationUnits(student) {
+  const duration = Number(student?.defaultLessonDurationMinutes || 60);
+  return Math.max(1, Math.ceil(duration / 30));
+}
+
+function getDurationMinutes(student) {
+  return getDurationUnits(student) * 30;
+}
+
+function hasTimeCollision(screen, plan, studentId, ignoredLessonId, targetSlotKey, durationMinutes, ignoredSourceSlotKey = null) {
+  const target = parseSlotKey(targetSlotKey);
+
+  if (!target) {
+    return false;
+  }
+
+  const targetStart = target.totalMinutes;
+  const targetEnd = targetStart + Math.max(30, Math.ceil(Number(durationMinutes || 60) / 30) * 30);
+
+  return collectTimedAssignments(screen, plan).some((assignment) => {
+    if (assignment.slotKey === ignoredSourceSlotKey) {
+      return false;
+    }
+
+    if (assignment.dayKey !== target.dayKey) {
+      return false;
+    }
+
+    if (assignment.source === 'lesson' && assignment.studentId === studentId && assignment.lessonId === ignoredLessonId) {
+      return false;
+    }
+
+    return intervalsOverlap(targetStart, targetEnd, assignment.start, assignment.end);
+  });
+}
+
+function collectTimedAssignments(screen, plan) {
+  return collectPlanAssignments(screen, plan)
+    .map((assignment) => {
+      const parsed = parseSlotKey(assignment.slotKey);
+
+      if (!parsed) {
+        return null;
+      }
+
+      return {
+        source: assignment.source,
+        slotKey: assignment.slotKey,
+        studentId: assignment.studentId,
+        lessonId: assignment.lessonId,
+        dayKey: parsed.dayKey,
+        start: parsed.totalMinutes,
+        end: parsed.totalMinutes + getDurationMinutes(assignment.student),
+      };
+    })
+    .filter(Boolean);
+}
+
+function intervalsOverlap(startA, endA, startB, endB) {
+  return startA < endB && startB < endA;
+}
+
+function isCurrentWeekPlan(plan) {
+  return plan?.type === SCHEDULE_PLAN_TYPES.currentWeek;
+}
+
+function isPermanentPlan(plan) {
+  return plan?.type === SCHEDULE_PLAN_TYPES.permanent;
+}
+
+function findRenderedAssignment(screen, plan, lessonId) {
+  return collectPlanAssignments(screen, plan).find((assignment) => assignment.lessonId === lessonId) ?? null;
 }
 
 async function deletePlan(screen, plan) {
+  if (plan.fixed) {
+    return;
+  }
+
   if (screen.plans.length <= 1) {
     return;
   }

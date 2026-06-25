@@ -3,28 +3,37 @@ import {
   clearSlot,
   createSchedulePlan,
   duplicateSchedulePlan,
+  clearScheduleLesson,
   moveAssignment,
+  moveScheduleLesson,
   normalizeSchedulePlan,
+  SCHEDULE_PLAN_TYPES,
   togglePaintedSlot,
   touchSchedulePlan,
+  upsertScheduleLesson,
 } from '../domain/schedule.js';
 import { getLocalDeviceId } from '../data/device.js';
 import { addChangeLog } from '../data/changeLogRepository.js';
 import * as repository from '../data/scheduleRepository.js';
 
+const CURRENT_WEEK_PLAN_ID = 'setka-current-week';
+const PERMANENT_PLAN_ID = 'setka-permanent';
+
 export async function getScheduleWorkspace() {
   let plans = (await repository.listSchedulePlans()).map(normalizeSchedulePlan);
 
-  if (plans.length === 0) {
-    const firstPlan = createSchedulePlan('Расписание 1', getLocalDeviceId());
-    await repository.saveSchedulePlan(firstPlan);
-    await addScheduleChange(firstPlan.id, 'create', null, firstPlan);
-    plans = [firstPlan];
+  const fixedPlans = ensureFixedPlans(plans);
+
+  if (JSON.stringify(plans) !== JSON.stringify(fixedPlans)) {
+    await repository.replaceSchedulePlans(fixedPlans);
+    await addScheduleChange(CURRENT_WEEK_PLAN_ID, 'ensure_fixed_plans', plans, fixedPlans);
   }
 
+  plans = fixedPlans;
+
   const ui = await repository.getScheduleUiSettings();
-  const activePlanId = plans.some((plan) => plan.id === ui.activePlanId) ? ui.activePlanId : plans[0].id;
-  const comparePlanId = plans.some((plan) => plan.id === ui.comparePlanId) ? ui.comparePlanId : activePlanId;
+  const activePlanId = plans.some((plan) => plan.id === ui.activePlanId) ? ui.activePlanId : CURRENT_WEEK_PLAN_ID;
+  const comparePlanId = plans.some((plan) => plan.id === ui.comparePlanId) ? ui.comparePlanId : PERMANENT_PLAN_ID;
 
   return {
     plans,
@@ -34,6 +43,57 @@ export async function getScheduleWorkspace() {
       compareMode: Boolean(ui.compareMode),
     },
   };
+}
+
+function ensureFixedPlans(plans) {
+  const normalizedPlans = plans.map(normalizeSchedulePlan);
+  const currentSource =
+    normalizedPlans.find((plan) => plan.type === SCHEDULE_PLAN_TYPES.currentWeek) ??
+    normalizedPlans.find((plan) => /текущ|current/i.test(plan.title)) ??
+    normalizedPlans[0] ??
+    null;
+  const permanentSource =
+    normalizedPlans.find((plan) => plan.type === SCHEDULE_PLAN_TYPES.permanent) ??
+    normalizedPlans.find((plan) => /постоян|permanent/i.test(plan.title)) ??
+    normalizedPlans.find((plan) => plan.id !== currentSource?.id) ??
+    null;
+
+  const currentPlan = normalizeSchedulePlan({
+    ...(currentSource ?? createSchedulePlan(currentWeekTitle(), getLocalDeviceId())),
+    id: CURRENT_WEEK_PLAN_ID,
+    title: currentSource?.title || currentWeekTitle(),
+    type: SCHEDULE_PLAN_TYPES.currentWeek,
+    fixed: true,
+    lessonsInitialized: true,
+  });
+  const permanentPlan = normalizeSchedulePlan({
+    ...(permanentSource ?? createSchedulePlan('Постоянное расписание', getLocalDeviceId())),
+    id: PERMANENT_PLAN_ID,
+    title: permanentSource?.title || 'Постоянное расписание',
+    type: SCHEDULE_PLAN_TYPES.permanent,
+    fixed: true,
+    lessons: [],
+    assignments: {},
+    hiddenRegularLessonIds: [],
+    lessonsInitialized: false,
+  });
+
+  return [currentPlan, permanentPlan];
+}
+
+function currentWeekTitle(date = new Date()) {
+  const start = new Date(date);
+  const day = start.getDay() || 7;
+  start.setDate(start.getDate() - day + 1);
+
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+
+  return `Текущая неделя (${formatShortDate(start)}-${formatShortDate(end)})`;
+}
+
+function formatShortDate(date) {
+  return `${String(date.getDate()).padStart(2, '0')}.${String(date.getMonth() + 1).padStart(2, '0')}`;
 }
 
 export async function saveScheduleUi(ui) {
@@ -122,6 +182,27 @@ export async function clearStudent(plan, slot) {
   const updatedPlan = clearSlot(plan, slot);
   await repository.saveSchedulePlan(updatedPlan);
   await addScheduleChange(updatedPlan.id, 'clear_slot', plan, updatedPlan);
+  return updatedPlan;
+}
+
+export async function saveLesson(plan, lesson) {
+  const updatedPlan = upsertScheduleLesson(plan, lesson);
+  await repository.saveSchedulePlan(updatedPlan);
+  await addScheduleChange(updatedPlan.id, 'save_lesson', plan, updatedPlan);
+  return updatedPlan;
+}
+
+export async function moveLesson(plan, lessonId, targetSlot) {
+  const updatedPlan = moveScheduleLesson(plan, lessonId, targetSlot);
+  await repository.saveSchedulePlan(updatedPlan);
+  await addScheduleChange(updatedPlan.id, 'move_lesson', plan, updatedPlan);
+  return updatedPlan;
+}
+
+export async function clearLesson(plan, lessonId) {
+  const updatedPlan = clearScheduleLesson(plan, lessonId);
+  await repository.saveSchedulePlan(updatedPlan);
+  await addScheduleChange(updatedPlan.id, 'clear_lesson', plan, updatedPlan);
   return updatedPlan;
 }
 

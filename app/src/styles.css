@@ -245,6 +245,157 @@ button {
   font-size: 30px;
 }
 
+.finance-note {
+  max-width: 420px;
+  text-align: right;
+}
+
+.finance-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+
+.finance-tab {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.finance-tab.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.finance-tab-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.finance-block {
+  margin-top: 0;
+}
+
+.finance-breakdown {
+  display: grid;
+  gap: 8px;
+}
+
+.finance-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(120px, 1fr));
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.finance-row-head {
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.payment-forecast-row {
+  grid-template-columns: minmax(170px, 1.3fr) repeat(5, minmax(105px, 1fr)) minmax(130px, 0.9fr);
+}
+
+.payment-due {
+  border-color: rgba(12, 124, 116, 0.36);
+  background: rgba(223, 241, 238, 0.74);
+}
+
+.payment-status {
+  font-weight: 800;
+}
+
+.payment-status.due {
+  color: var(--accent-strong);
+}
+
+.today-note {
+  max-width: 420px;
+  text-align: right;
+}
+
+.today-list {
+  display: grid;
+  gap: 10px;
+}
+
+.today-lesson {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.today-lesson.done {
+  border-color: rgba(12, 124, 116, 0.34);
+  background: rgba(223, 241, 238, 0.42);
+}
+
+.today-lesson-summary {
+  display: grid;
+  grid-template-columns: 90px minmax(180px, 1fr) 100px 140px;
+  gap: 12px;
+  align-items: center;
+  padding: 14px 16px;
+  cursor: pointer;
+}
+
+.today-duration {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.today-status {
+  justify-self: start;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #ece7dc;
+  color: #4a463f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.today-status.done {
+  background: #dff1ee;
+  color: #075e58;
+}
+
+.today-lesson-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+
+.today-textarea {
+  min-height: 90px;
+}
+
+.today-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.today-empty {
+  margin-top: 0;
+}
+
 .student-workspace {
   display: grid;
   grid-template-columns: minmax(360px, 0.95fr) minmax(420px, 1.2fr);
@@ -640,17 +791,21 @@ button {
 }
 
 .native-schedule-grid {
+  position: relative;
   display: grid;
   grid-template-columns: 78px repeat(7, minmax(120px, 1fr)) 78px;
+  grid-template-rows: 58px repeat(10, 58px);
   gap: 1px;
   min-width: 1020px;
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
   background: var(--line);
+  isolation: isolate;
 }
 
 .schedule-cell {
+  position: relative;
   min-height: 58px;
   padding: 8px;
   display: grid;
@@ -667,42 +822,97 @@ button {
 
 .native-slot {
   position: relative;
+  z-index: 0;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  place-items: stretch;
+  padding: 0;
+  overflow: visible;
   transition:
     outline-color 0.15s ease,
     background 0.15s ease;
 }
 
-.native-slot.over {
+.native-slot.occupied {
+  z-index: 30;
+}
+
+.native-slot.covered-by-lesson {
+  z-index: 1;
+}
+
+.slot-half {
+  position: relative;
+  z-index: 0;
+  display: grid;
+  place-items: center;
+  min-height: 29px;
+  padding: 2px 6px;
+}
+
+.slot-half.occupied {
+  z-index: 40;
+}
+
+.slot-half-middle {
+  border-top: 1px dashed rgba(104, 100, 91, 0.22);
+}
+
+.slot-half-middle::after {
+  content: ":30";
+  position: absolute;
+  right: 5px;
+  bottom: 2px;
+  color: rgba(104, 100, 91, 0.42);
+  font-size: 10px;
+  font-weight: 800;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.slot-half-middle:hover::after,
+.slot-half-middle.over::after {
+  opacity: 1;
+}
+
+.slot-half.unavailable {
+  background: rgba(104, 100, 91, 0.08);
+}
+
+.slot-half.covered {
+  color: transparent;
+}
+
+.slot-half.covered::after,
+.slot-half.covered .slot-empty-label {
+  visibility: hidden;
+}
+
+.slot-half.over {
   outline: 3px solid var(--accent);
   outline-offset: -3px;
 }
 
-.native-slot.priority-green,
+.slot-half.priority-green,
 .legend-swatch.priority-green {
   background: rgba(34, 197, 94, 0.2);
 }
 
-.native-slot.priority-yellow,
+.slot-half.priority-yellow,
 .legend-swatch.priority-yellow {
   background: rgba(250, 204, 21, 0.24);
 }
 
-.native-slot.priority-red,
+.slot-half.priority-red,
 .legend-swatch.priority-red {
   background: rgba(239, 68, 68, 0.2);
 }
 
-.native-slot.priority-busy,
+.slot-half.priority-busy,
 .legend-swatch.priority-busy {
   background:
     repeating-linear-gradient(45deg, rgba(59, 130, 246, 0.32) 0, rgba(59, 130, 246, 0.32) 9px, rgba(255, 255, 255, 0.18) 9px, rgba(255, 255, 255, 0.18) 18px),
     rgba(59, 130, 246, 0.18);
-}
-
-.native-slot.occupied {
-  background:
-    repeating-linear-gradient(45deg, rgba(168, 85, 247, 0.34) 0, rgba(168, 85, 247, 0.34) 9px, rgba(255, 255, 255, 0.2) 9px, rgba(255, 255, 255, 0.2) 18px),
-    rgba(168, 85, 247, 0.16);
 }
 
 .slot-empty-label {
@@ -713,44 +923,88 @@ button {
 
 .assignment-block {
   position: relative;
-  display: block;
-  width: 100%;
-  min-height: 40px;
-  padding: 8px 34px 8px 10px;
-  border: 1px solid rgba(168, 85, 247, 0.22);
+  z-index: 60;
+  display: grid;
+  align-items: center;
+  justify-items: center;
+  width: calc(100% - 10px);
+  height: calc((var(--duration-units, 2) * 100%) - 6px);
+  min-height: 24px;
+  margin: 3px 5px;
+  padding: 6px 8px;
+  border: 1px solid rgba(168, 85, 247, 0.32);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.72);
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.98)),
+    repeating-linear-gradient(45deg, rgba(168, 85, 247, 0.28) 0, rgba(168, 85, 247, 0.28) 9px, rgba(255, 255, 255, 0.18) 9px, rgba(255, 255, 255, 0.18) 18px);
   cursor: grab;
-  text-align: left;
+  text-align: center;
+  box-shadow: 0 0 0 5px rgba(168, 85, 247, 0.24);
+}
+
+.slot-half > .assignment-block {
+  position: absolute;
+  inset: 0 auto auto 0;
+}
+
+.assignment-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  grid-template-columns: inherit;
+  grid-template-rows: inherit;
+  gap: inherit;
+  pointer-events: none;
+}
+
+.assignment-overlay-slot {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  pointer-events: none;
+}
+
+.assignment-overlay-slot > .assignment-block {
+  position: absolute;
+  top: calc(var(--lesson-offset, 0%) + 3px);
+  right: 5px;
+  left: 5px;
+  width: auto;
+  height: calc(var(--lesson-height, 100%) - 6px);
+  margin: 0;
+  pointer-events: auto;
 }
 
 .assignment-block.long-lesson {
-  min-height: 66px;
+  min-height: 70px;
 }
 
-.regular-occupied .assignment-block {
+.assignment-block.regular-lesson {
   border-color: rgba(12, 124, 116, 0.28);
-  background: rgba(223, 241, 238, 0.74);
+  background:
+    linear-gradient(rgba(223, 241, 238, 0.98), rgba(223, 241, 238, 0.98)),
+    repeating-linear-gradient(45deg, rgba(168, 85, 247, 0.28) 0, rgba(168, 85, 247, 0.28) 9px, rgba(255, 255, 255, 0.18) 9px, rgba(255, 255, 255, 0.18) 18px);
+}
+
+.assignment-block.one-off-lesson {
+  border-color: rgba(188, 108, 37, 0.34);
+  background:
+    linear-gradient(rgba(255, 247, 237, 0.98), rgba(255, 247, 237, 0.98)),
+    repeating-linear-gradient(45deg, rgba(188, 108, 37, 0.24) 0, rgba(188, 108, 37, 0.24) 9px, rgba(255, 255, 255, 0.18) 9px, rgba(255, 255, 255, 0.18) 18px);
 }
 
 .assignment-block strong {
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
   color: var(--text);
   font-size: 14px;
   font-weight: 900;
-  line-height: 1.2;
-}
-
-.assignment-duration {
-  display: block;
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  line-height: 1.1;
+  line-height: 1.15;
 }
 
 .slot-clear-button {
@@ -764,6 +1018,31 @@ button {
   background: var(--danger-soft);
   color: var(--danger);
   font-weight: 900;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.assignment-block:hover .slot-clear-button,
+.assignment-block:focus-within .slot-clear-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.lesson-kind-content {
+  display: grid;
+  gap: 14px;
+}
+
+.lesson-kind-content h2,
+.lesson-kind-content p {
+  margin: 0;
+}
+
+.lesson-kind-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .schedule-students-panel {
@@ -937,11 +1216,17 @@ button {
   gap: 10px;
 }
 
-.regular-lesson-row,
+.regular-lesson-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
 .billing-grid,
 .billing-view {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   align-items: end;
 }
@@ -1058,9 +1343,30 @@ button {
   .regular-lesson-row,
   .billing-grid,
   .billing-view,
+  .finance-row,
   .schedule-native-layout.compare .schedule-cards,
   .student-form {
     grid-template-columns: 1fr;
+  }
+
+  .finance-note {
+    max-width: none;
+    text-align: left;
+  }
+
+  .today-note {
+    max-width: none;
+    text-align: left;
+  }
+
+  .today-lesson-summary,
+  .today-lesson-body {
+    grid-template-columns: 1fr;
+  }
+
+  .today-actions {
+    justify-content: stretch;
+    flex-direction: column;
   }
 
   .student-row {

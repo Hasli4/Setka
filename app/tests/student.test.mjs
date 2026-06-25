@@ -35,24 +35,31 @@ describe('student status', () => {
   it('maps legacy frozen student status to paused', () => {
     assert.equal(normalizeStudentStatus('frozen'), 'paused');
   });
+
+  it('maps removed student statuses to active', () => {
+    assert.equal(normalizeStudentStatus('new'), 'active');
+    assert.equal(normalizeStudentStatus('debt'), 'active');
+    assert.equal(normalizeStudentStatus('archive'), 'active');
+  });
 });
 
 describe('student schedule and billing', () => {
-  it('stores up to two regular Moscow-time lessons', () => {
+  it('stores more than two regular Moscow-time lessons', () => {
     const student = validateStudentInput({
       fullName: 'Test Student',
       regularLessons: [
-        { weekday: 'tue', startTime: '08:00' },
+        { weekday: 'tue', startTime: '08:30' },
         { weekday: 'fri', startTime: '17' },
-        { weekday: 'mon', startTime: '18:00' },
+        { weekday: 'mon', startTime: '09:30' },
       ],
     });
 
     assert.deepEqual(
       student.regularLessons.map((lesson) => [lesson.weekday, lesson.startTime]),
       [
-        ['tue', '08:00'],
+        ['tue', '08:30'],
         ['fri', '17:00'],
+        ['mon', '09:30'],
       ],
     );
   });
@@ -67,5 +74,29 @@ describe('student schedule and billing', () => {
     });
 
     assert.equal(student.billing.singleLessonPrice, 1000);
+  });
+
+  it('accepts flexible subscription prices', () => {
+    const student = validateStudentInput({
+      fullName: 'Test Student',
+      billing: {
+        subscriptionPrice: '750',
+        lessonsPerSubscription: 1,
+      },
+    });
+
+    assert.equal(student.billing.subscriptionPrice, 750);
+    assert.equal(student.billing.singleLessonPrice, 750);
+  });
+
+  it('stores a manual lesson balance including negative values', () => {
+    const student = validateStudentInput({
+      fullName: 'Test Student',
+      billing: {
+        remainingLessons: '-1,5',
+      },
+    });
+
+    assert.equal(student.billing.remainingLessons, -1.5);
   });
 });

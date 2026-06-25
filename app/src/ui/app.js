@@ -1,15 +1,23 @@
 import { STUDENT_STATUSES, getStatusLabel } from '../domain/statuses.js';
 import { SCHEDULE_DAYS } from '../domain/schedule.js';
+import { buildFinanceReport, buildIncomeForecast } from '../domain/finance.js';
+import { buildPaymentMessage } from '../domain/paymentMessage.js';
 import * as studentService from '../services/studentService.js';
 import { listChangeLogs } from '../data/changeLogRepository.js';
 import { clear, createElement, formatDate } from './dom.js';
 import { mountScheduleScreen } from './scheduleScreen.js';
+import { mountCurrentDayScreen } from './currentDayScreen.js';
 import { openStudentForm } from './studentForm.js';
 
 const SIDEBAR_COLLAPSED_KEY = 'setka.sidebarCollapsed';
+const FINANCE_TABS = Object.freeze([
+  { key: 'income-forecast', label: 'Прогноз дохода' },
+  { key: 'overview', label: 'Общая информация' },
+]);
 
 const state = {
   screen: 'students',
+  financeTab: 'income-forecast',
   students: [],
   selectedStudentId: null,
   search: '',
@@ -73,7 +81,9 @@ function renderShell(root) {
           ],
         }),
         createNavButton('students', 'Ученики'),
+        createNavButton('today', 'Текущий день'),
         createNavButton('schedule', 'Расписание'),
+        createNavButton('finance', 'Финансы'),
       ],
     }),
     createElement('main', {
@@ -132,6 +142,20 @@ function renderMain() {
     return;
   }
 
+  if (state.screen === 'today') {
+    const todayRoot = createElement('section', { className: 'workspace' });
+    main.append(todayRoot);
+    mountCurrentDayScreen(todayRoot, state.students, {
+      onStudentsChanged: refresh,
+    });
+    return;
+  }
+
+  if (state.screen === 'finance') {
+    main.append(renderFinanceScreen());
+    return;
+  }
+
   main.append(renderStudentsScreen());
 }
 
@@ -148,6 +172,225 @@ function renderStudentsScreen() {
         className: 'student-workspace',
         children: [renderStudentList(filteredStudents), renderStudentDetails(selectedStudent)],
       }),
+    ],
+  });
+}
+
+function renderFinanceScreen() {
+  const activeTab = FINANCE_TABS.find((tab) => tab.key === state.financeTab) ?? FINANCE_TABS[0];
+
+  return createElement('section', {
+    className: 'workspace',
+    children: [
+      createElement('header', {
+        className: 'page-header',
+        children: [
+          createElement('div', {
+            children: [
+              createElement('p', { className: 'eyebrow', text: 'Финансы' }),
+              createElement('h1', { text: activeTab.label }),
+            ],
+          }),
+          createElement('p', {
+            className: 'muted finance-note',
+            text: 'Финансовые прогнозы считаются по активным ученикам и постоянным занятиям из карточек.',
+          }),
+        ],
+      }),
+      renderFinanceTabs(),
+      activeTab.key === 'income-forecast'
+        ? renderIncomeForecastTab(buildIncomeForecast(state.students))
+        : renderFinanceOverviewTab(buildFinanceReport(state.students)),
+    ],
+  });
+}
+
+function renderFinanceTabs() {
+  return createElement('div', {
+    className: 'finance-tabs',
+    attrs: { role: 'tablist', 'aria-label': 'Разделы финансов' },
+    children: FINANCE_TABS.map((tab) => {
+      const button = createElement('button', {
+        className: `finance-tab ${state.financeTab === tab.key ? 'active' : ''}`,
+        text: tab.label,
+        attrs: { type: 'button', role: 'tab', 'aria-selected': state.financeTab === tab.key ? 'true' : 'false' },
+      });
+
+      button.addEventListener('click', () => {
+        state.financeTab = tab.key;
+        renderMain();
+      });
+
+      return button;
+    }),
+  });
+}
+
+function renderIncomeForecastTab(forecast) {
+  return createElement('div', {
+    className: 'finance-tab-panel',
+    children: [
+      createElement('div', {
+        className: 'stats',
+        children: [
+          renderStat('Сумма к оплате на 30 число месяца', formatCurrency(forecast.totalDue)),
+          renderStat('Дата расчета', formatIsoDateLabel(forecast.today)),
+          renderStat('Прогноз до', formatIsoDateLabel(forecast.targetDate)),
+          renderStat('Учеников к оплате', forecast.dueStudents),
+        ],
+      }),
+      createElement('section', {
+        className: 'info-block finance-block',
+        children: [
+          createElement('h3', { text: 'Кто попадает в прогноз' }),
+          createElement('p', {
+            className: 'muted',
+            text: 'Если остаток занятий к дате прогноза станет 0 или ниже, ученик попадает в сумму оплаты одним абонементом.',
+          }),
+          renderPaymentForecastBreakdown(forecast.rows),
+        ],
+      }),
+    ],
+  });
+}
+
+function renderFinanceOverviewTab(report) {
+  return createElement('div', {
+    className: 'finance-tab-panel',
+    children: [
+      createElement('div', {
+        className: 'stats',
+        children: [
+          renderStat('За неделю', formatCurrency(report.weeklyTotal)),
+          renderStat('За месяц', formatCurrency(report.monthlyTotal)),
+          renderStat('Занятий в неделю', report.weeklyLessons),
+          renderStat('Активных учеников', report.activeStudents),
+        ],
+      }),
+      createElement('section', {
+        className: 'info-block finance-block',
+        children: [
+          createElement('h3', { text: 'Расчет по ученикам' }),
+          renderFinanceBreakdown(report.rows),
+        ],
+      }),
+    ],
+  });
+}
+
+function renderPaymentForecastBreakdown(rows) {
+  if (rows.length === 0) {
+    return createElement('p', {
+      className: 'muted',
+      text: 'Пока нет активных учеников для прогноза.',
+    });
+  }
+
+  return createElement('div', {
+    className: 'finance-breakdown',
+    children: [
+      createElement('div', {
+        className: 'finance-row payment-forecast-row finance-row-head',
+        children: [
+          createElement('span', { text: 'Ученик' }),
+          createElement('span', { text: 'Остаток сейчас' }),
+          createElement('span', { text: 'Уроков до даты' }),
+          createElement('span', { text: 'Остаток к дате' }),
+          createElement('span', { text: 'Абонемент' }),
+          createElement('span', { text: 'Статус' }),
+          createElement('span', { text: 'Сообщение' }),
+        ],
+      }),
+      ...rows.map((row) => {
+        const copyButton = createElement('button', {
+          className: 'secondary-button compact-button',
+          text: 'Скопировать',
+          attrs: { type: 'button' },
+        });
+        copyButton.addEventListener('click', async () => {
+          copyButton.disabled = true;
+
+          try {
+            await copyToClipboard(buildPaymentMessage(row.student));
+            copyButton.textContent = 'Скопировано';
+            window.setTimeout(() => {
+              copyButton.textContent = 'Скопировать';
+              copyButton.disabled = false;
+            }, 1400);
+          } catch (error) {
+            window.alert(`Не удалось скопировать сообщение: ${error.message}`);
+            copyButton.disabled = false;
+          }
+        });
+
+        return createElement('div', {
+          className: `finance-row payment-forecast-row ${row.needsPayment ? 'payment-due' : ''}`,
+          children: [
+            createElement('strong', { text: studentDisplayName(row.student) }),
+            createElement('span', { text: formatLessonBalance(row.remainingLessons) }),
+            createElement('span', { text: String(row.projectedLessons) }),
+            createElement('span', { text: formatLessonBalance(row.projectedBalance) }),
+            createElement('span', { text: formatCurrency(row.subscriptionPrice) }),
+            createElement('span', { className: row.needsPayment ? 'payment-status due' : 'payment-status', text: paymentForecastStatus(row) }),
+            copyButton,
+          ],
+        });
+      }),
+    ],
+  });
+}
+
+function paymentForecastStatus(row) {
+  if (row.needsPayment) {
+    return 'К оплате';
+  }
+
+  if (row.projectedBalance <= 0 && row.subscriptionPrice <= 0) {
+    return 'Нет цены';
+  }
+
+  if (row.projectedLessons === 0) {
+    return 'Нет занятий';
+  }
+
+  if (row.projectedBalance > 0) {
+    return 'Запас есть';
+  }
+
+  return 'Нет цены';
+}
+
+function renderFinanceBreakdown(rows) {
+  if (rows.length === 0) {
+    return createElement('p', {
+      className: 'muted',
+      text: 'Пока нет активных учеников для расчета.',
+    });
+  }
+
+  return createElement('div', {
+    className: 'finance-breakdown',
+    children: [
+      createElement('div', {
+        className: 'finance-row finance-row-head',
+        children: [
+          createElement('span', { text: 'Ученик' }),
+          createElement('span', { text: 'Постоянных занятий' }),
+          createElement('span', { text: 'Цена занятия' }),
+          createElement('span', { text: 'За неделю' }),
+        ],
+      }),
+      ...rows.map((row) =>
+        createElement('div', {
+          className: 'finance-row',
+          children: [
+            createElement('strong', { text: studentDisplayName(row.student) }),
+            createElement('span', { text: String(row.lessonsPerWeek) }),
+            createElement('span', { text: formatCurrency(row.singleLessonPrice) }),
+            createElement('span', { text: formatCurrency(row.weeklyTotal) }),
+          ],
+        }),
+      ),
     ],
   });
 }
@@ -211,16 +454,16 @@ function renderHeader() {
 
 function renderStats() {
   const active = state.students.filter((student) => student.status === 'active').length;
-  const debt = state.students.filter((student) => student.status === 'debt').length;
   const paused = state.students.filter((student) => student.status === 'paused').length;
+  const completed = state.students.filter((student) => student.status === 'completed').length;
 
   return createElement('div', {
     className: 'stats',
     children: [
       renderStat('Всего', state.students.length),
       renderStat('Активные', active),
-      renderStat('Долг', debt),
       renderStat('Пауза', paused),
+      renderStat('Завершили', completed),
     ],
   });
 }
@@ -431,22 +674,19 @@ function renderRegularLessons(student) {
 }
 
 function renderBilling(billing = {}) {
-  const hasBilling = billing.subscriptionPrice > 0 || billing.lessonsPerSubscription > 0;
-
   return createElement('div', {
     className: 'info-block',
     children: [
       createElement('h3', { text: 'Абонемент' }),
-      hasBilling
-        ? createElement('div', {
-            className: 'billing-view',
-            children: [
-              renderDetail('Стоимость абонемента', formatMoney(billing.subscriptionPrice)),
-              renderDetail('Занятий в абонементе', String(billing.lessonsPerSubscription || 0)),
-              renderDetail('Стоимость 1 занятия', formatMoney(billing.singleLessonPrice)),
-            ],
-          })
-        : createElement('p', { className: 'muted', text: 'Параметры абонемента пока не указаны.' }),
+      createElement('div', {
+        className: 'billing-view',
+        children: [
+          renderDetail('Стоимость абонемента', formatMoney(billing.subscriptionPrice)),
+          renderDetail('Занятий в абонементе', String(billing.lessonsPerSubscription || 0)),
+          renderDetail('Стоимость 1 занятия', formatMoney(billing.singleLessonPrice)),
+          renderDetail('Остаток занятий', formatLessonBalance(billing.remainingLessons)),
+        ],
+      }),
     ],
   });
 }
@@ -458,6 +698,42 @@ function weekdayLabel(weekday) {
 function formatMoney(value) {
   const amount = Number(value || 0);
   return amount > 0 ? `${amount.toLocaleString('ru-RU')} ₽` : 'Не указано';
+}
+
+function formatCurrency(value) {
+  const amount = Number(value || 0);
+  return `${amount.toLocaleString('ru-RU')} ₽`;
+}
+
+function formatIsoDateLabel(value) {
+  const [year, month, day] = String(value).split('-');
+  return `${day}.${month}.${year}`;
+}
+
+function formatLessonBalance(value) {
+  const amount = Number(value || 0);
+  return amount.toLocaleString('ru-RU');
+}
+
+async function copyToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.append(textarea);
+  textarea.select();
+
+  try {
+    document.execCommand('copy');
+  } finally {
+    textarea.remove();
+  }
 }
 
 function renderStudentContacts(contacts) {
@@ -515,4 +791,8 @@ function getInitials(fullName) {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() ?? '')
     .join('');
+}
+
+function studentDisplayName(student) {
+  return student.nickname || student.fullName;
 }

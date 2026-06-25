@@ -1,10 +1,7 @@
 export const STUDENT_STATUSES = Object.freeze([
   { value: 'active', label: 'Активен' },
-  { value: 'new', label: 'Новый' },
   { value: 'paused', label: 'Пауза' },
   { value: 'completed', label: 'Завершил курс' },
-  { value: 'archive', label: 'Архив' },
-  { value: 'debt', label: 'Долг' },
 ]);
 
 export const LESSON_STATUSES = Object.freeze([

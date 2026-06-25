@@ -3,8 +3,14 @@ import assert from 'node:assert/strict';
 import {
   assignStudentToSlot,
   createSchedulePlan,
+  duplicateSchedulePlan,
   moveAssignment,
+  moveScheduleLesson,
+  parseSlotKey,
   SCHEDULE_DAYS,
+  SCHEDULE_LESSON_KINDS,
+  SCHEDULE_TIMES,
+  upsertScheduleLesson,
   togglePaintedSlot,
 } from '../src/domain/schedule.js';
 import { buildScheduleExportHtml } from '../src/services/scheduleExportService.js';
@@ -17,14 +23,27 @@ describe('schedule domain', () => {
     );
   });
 
+  it('supports half-hour starts without adding a 17:30 slot', () => {
+    assert.ok(SCHEDULE_TIMES.includes('08:30'));
+    assert.ok(SCHEDULE_TIMES.includes('16:30'));
+    assert.ok(!SCHEDULE_TIMES.includes('17:30'));
+    assert.deepEqual(parseSlotKey('tue_8_30'), {
+      dayKey: 'tue',
+      hour: 8,
+      minute: 30,
+      startTime: '08:30',
+      totalMinutes: 510,
+    });
+  });
+
   it('assigns and moves a student by id', () => {
     const plan = createSchedulePlan('Test plan');
-    const assigned = assignStudentToSlot(plan, 'tue_8', 'student-1');
-    const moved = moveAssignment(assigned, 'tue_8', 'wed_9');
+    const assigned = assignStudentToSlot(plan, 'tue_8_30', 'student-1');
+    const moved = moveAssignment(assigned, 'tue_8_30', 'wed_9_30');
 
-    assert.equal(assigned.assignments.tue_8, 'student-1');
-    assert.equal(moved.assignments.tue_8, undefined);
-    assert.equal(moved.assignments.wed_9, 'student-1');
+    assert.equal(assigned.assignments.tue_8_30, 'student-1');
+    assert.equal(moved.assignments.tue_8_30, undefined);
+    assert.equal(moved.assignments.wed_9_30, 'student-1');
   });
 
   it('marks empty slots and clears the mark when toggled again', () => {
@@ -34,6 +53,23 @@ describe('schedule domain', () => {
 
     assert.equal(painted.painted.tue_8, 'green');
     assert.equal(cleared.painted.tue_8, undefined);
+  });
+
+  it('duplicates schedule lessons independently', () => {
+    const plan = upsertScheduleLesson(createSchedulePlan('Base'), {
+      id: 'lesson-1',
+      studentId: 'student-1',
+      weekday: 'tue',
+      startTime: '10:00',
+      kind: SCHEDULE_LESSON_KINDS.regular,
+    });
+    const duplicated = duplicateSchedulePlan(plan, 'Copy');
+    const moved = moveScheduleLesson(duplicated, 'lesson-1', 'sun_10');
+
+    assert.equal(plan.lessons[0].weekday, 'tue');
+    assert.equal(plan.lessons[0].startTime, '10:00');
+    assert.equal(moved.lessons[0].weekday, 'sun');
+    assert.equal(moved.lessons[0].startTime, '10:00');
   });
 });
 
@@ -70,7 +106,7 @@ describe('schedule export', () => {
     const plan = createSchedulePlan('Public plan');
     const html = buildScheduleExportHtml(
       [plan],
-      [{ id: 'student-1', fullName: 'Иван Иванов', nickname: 'Ваня', regularLessons: [{ weekday: 'tue', startTime: '08:00' }] }],
+      [{ id: 'student-1', fullName: 'Иван Иванов', nickname: 'Ваня', regularLessons: [{ weekday: 'tue', startTime: '08:30' }] }],
     );
 
     assert.match(html, /Ваня/);
